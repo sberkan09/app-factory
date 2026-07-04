@@ -4,3 +4,4 @@ workspaces/
 .pytest_cache/
 .venv/
 *.log
+app_factory.sqlite*
