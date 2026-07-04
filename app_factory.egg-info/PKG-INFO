@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: app-factory
+Version: 0.1.0
+Summary: Autonomous mobile app factory - multi-agent pipeline (idea -> spec -> design -> code -> QA -> visual QA -> release -> deploy)
+Requires-Python: >=3.11
+Requires-Dist: anthropic>=0.92.0
+Requires-Dist: langgraph>=0.4.0
+Requires-Dist: langgraph-checkpoint-sqlite>=2.0.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn>=0.30.0
+Requires-Dist: pydantic>=2.8.0
+Requires-Dist: pydantic-settings>=2.4.0
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: pillow>=10.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"

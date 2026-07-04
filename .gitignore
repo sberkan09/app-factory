@@ -1,0 +1,6 @@
+.env
+workspaces/
+.claude/
+.pytest_cache/
+.venv/
+*.log
