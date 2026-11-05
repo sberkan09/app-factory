@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 from typing import Protocol, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app_factory.llm.usage import record_usage
 
@@ -97,12 +97,32 @@ class AnthropicLLM:
         if not model.startswith("claude-fable"):
             kwargs["thinking"] = {"type": "adaptive"}
 
-        if max_tokens > STREAMING_THRESHOLD:
-            # Coder gibi uzun çıktılı çağrılar: streaming + nihai mesaj
-            with self._client.messages.stream(**kwargs) as stream:
+        streaming = max_tokens > STREAMING_THRESHOLD
+        if streaming:
+            # Coder gibi uzun çıktılı çağrılar: streaming + nihai mesaj.
+            # SDK'ya output_format verilirse JSON, içerik bloğu kapanırken
+            # (stop_reason/usage gelmeden) parse edilir; max_tokens'ta kesilen
+            # çıktı ham ValidationError olarak patlar ve kullanım kaydedilmez.
+            # Bu yüzden şemayı output_config ile gönderip parse'ı kendimiz yaparız.
+            from anthropic import transform_schema
+
+            stream_kwargs = dict(kwargs)
+            stream_kwargs.pop("output_format")
+            stream_kwargs["output_config"] = {
+                "format": {
+                    "type": "json_schema",
+                    "schema": transform_schema(output_model.model_json_schema()),
+                }
+            }
+            with self._client.messages.stream(**stream_kwargs) as stream:
                 response = stream.get_final_message()
         else:
-            response = self._client.messages.parse(**kwargs)
+            try:
+                response = self._client.messages.parse(**kwargs)
+            except ValidationError as e:
+                raise LLMOutputError(
+                    f"Structured output parse failed (model={model}): {e}"
+                ) from e
 
         usage = getattr(response, "usage", None)
         if usage is not None:
@@ -121,6 +141,20 @@ class AnthropicLLM:
                 f"Output truncated at max_tokens={max_tokens} (model={model}); "
                 "çıktı şemaya uygun tamamlanamadı"
             )
+        if streaming:
+            return _parse_streamed(response, output_model, model)
         if response.parsed_output is None:
             raise LLMOutputError(f"Structured output parse failed (model={model})")
         return response.parsed_output
+
+
+def _parse_streamed(response, output_model: type[T], model: str) -> T:
+    text = "".join(
+        b.text for b in getattr(response, "content", None) or [] if getattr(b, "type", None) == "text"
+    )
+    if not text:
+        raise LLMOutputError(f"Structured output missing text block (model={model})")
+    try:
+        return output_model.model_validate_json(text)
+    except ValidationError as e:
+        raise LLMOutputError(f"Structured output parse failed (model={model}): {e}") from e
