@@ -53,3 +53,11 @@ def test_fingerprint_ignores_tool_noise_before_error():
     c = error_fingerprint("analyze", "Analyzing app... 2.1s\nerror • Undefined name 'y' • lib/main.dart:3:5")
     assert a == b
     assert a != c
+
+
+def test_local_ci_installs_rn_deps_before_typecheck(tmp_path):
+    from app_factory.services.ci import LocalCLIProvider
+
+    steps = LocalCLIProvider()._steps("react-native", tmp_path)
+    assert steps[0] == ("deps", ["npm", "install"])
+    assert [name for name, _ in steps[1:]] == ["analyze", "test"]

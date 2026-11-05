@@ -10,10 +10,14 @@ from app_factory.schemas.contracts import ErrorAnalysis
 PARSED = ErrorAnalysis(root_cause="x", fix_strategy="y")
 
 
-def response(stop_reason="end_turn", parsed=PARSED):
+def response(stop_reason="end_turn", parsed=PARSED, text=None):
     usage = SimpleNamespace(input_tokens=1200, output_tokens=300,
                             cache_read_input_tokens=0, cache_creation_input_tokens=0)
-    return SimpleNamespace(stop_reason=stop_reason, parsed_output=parsed, usage=usage)
+    if text is None:
+        text = parsed.model_dump_json() if parsed is not None else ""
+    content = [SimpleNamespace(type="text", text=text)]
+    return SimpleNamespace(stop_reason=stop_reason, parsed_output=parsed, usage=usage,
+                           content=content)
 
 
 class FakeClient:
@@ -61,6 +65,26 @@ def test_large_requests_stream_and_fable_omits_thinking():
     kind, kwargs = client.calls[0]
     assert kind == "stream"
     assert "thinking" not in kwargs
+    # SDK erken parse etmesin diye şema output_config ile gider
+    assert "output_format" not in kwargs
+    assert kwargs["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_streamed_output_is_parsed_after_stop_reason_check():
+    assert call(FakeClient(response()), max_tokens=64000) == PARSED
+
+
+def test_streamed_truncation_raises_output_error_and_records_usage():
+    truncated = response(stop_reason="max_tokens", parsed=None, text='{"root_cause": "x", "fix_')
+    with collect_usage() as calls, pytest.raises(LLMOutputError, match="truncated"):
+        call(FakeClient(truncated), max_tokens=64000)
+    assert calls and calls[0]["output_tokens"] == 300
+
+
+def test_streamed_invalid_json_raises_output_error():
+    bad = response(stop_reason="end_turn", parsed=None, text='{"root_cause": 1}')
+    with pytest.raises(LLMOutputError, match="parse failed"):
+        call(FakeClient(bad), max_tokens=64000)
 
 
 def test_refusal_and_truncation_raise():
