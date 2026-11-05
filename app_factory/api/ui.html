@@ -118,12 +118,16 @@ let selected = null, selectedFile = null, timer = null;
 const el = id => document.getElementById(id);
 const esc = s => (s??"").toString().replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
-function pill(phase, waiting){
+function pill(phase, waiting, r){
+  r = r || {};
+  if (r.error || r.can_retry) return '<span class="pill fail">hata — durdu</span>';
+  if (waiting) return '<span class="pill wait">onay bekliyor</span>';
   if (phase === "failed") return '<span class="pill fail">başarısız</span>';
   if (phase === "done") return '<span class="pill done">tamamlandı</span>';
-  if (waiting) return '<span class="pill wait">onay bekliyor</span>';
   return '<span class="pill run">çalışıyor</span>';
 }
+const fmtTok = n => n >= 1e6 ? (n/1e6).toFixed(2)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : (n||0);
+const fmtUsd = (u) => u ? ("$" + u.cost_usd.toFixed(u.cost_usd < 1 ? 3 : 2) + (u.cost_complete ? "" : "+")) : "—";
 
 async function loadRuns(){
   try{
@@ -133,7 +137,7 @@ async function loadRuns(){
       <div class="run-item ${r.run_id===selected?"active":""}" onclick="select('${r.run_id}')">
         <div class="row" style="justify-content:space-between">
           <span class="name">${esc(r.app_name || "…")}</span>
-          ${pill(r.phase, r.awaiting_approval)}
+          ${pill(r.phase, r.awaiting_approval, r)}
         </div>
         <div class="idea">${esc(r.idea)}</div>
         <div class="meta">${r.run_id} · ${esc(r.platform)} · ${esc(r.created_at)}</div>
@@ -191,22 +195,30 @@ async function renderDetail(force){
     <div class="row" style="justify-content:space-between">
       <div><span style="font-size:1.25rem;font-weight:700">${esc(c.app_name || "İsimlendiriliyor…")}</span>
         <span class="meta" style="color:var(--ink2);font-size:.8rem;margin-left:.5rem">${selected} · ${esc(d.platform)}</span></div>
-      ${pill(d.phase, d.awaiting_approval)}
+      ${pill(d.phase, d.awaiting_approval, d)}
     </div>
+    ${d.app_id ? `<div class="meta" style="color:var(--ink2);font-size:.78rem;font-family:var(--mono)">${esc(d.app_id)}</div>` : ""}
     ${stepper(d.phase)}
     <div class="stats">
       <div class="stat"><b>${d.qa_iteration}</b>QA iterasyonu</div>
       <div class="stat"><b>${d.visual_iteration}</b>Görsel QA</div>
       <div class="stat"><b>${d.escalation_level === "escalated" ? "Opus ⤴" : "Sonnet"}</b>model</div>
       <div class="stat"><b>${esc(d.build_status || "—")}</b>build</div>
+      <div class="stat" title="${d.usage ? Object.entries(d.usage.by_model).map(([m,v]) => `${m}: ${v.calls} çağrı, ${fmtTok(v.input_tokens)} in / ${fmtTok(v.output_tokens)} out`).join("\n") : ""}">
+        <b>${fmtUsd(d.usage)}</b>${d.usage ? `${d.usage.calls} LLM çağrısı · ${fmtTok(d.usage.input_tokens + d.usage.output_tokens)} token` : "maliyet"}</div>
     </div>
   </div>`;
+
+  if (d.error || d.can_retry)
+    html += `<div class="banner err">⚠️ <b>Run durdu</b>${d.next_nodes?.length ? ` (<code>${esc(d.next_nodes.join(", "))}</code> adımında)` : ""}:
+             ${esc(d.error || "işlem yarıda kaldı (ör. sunucu yeniden başladı)")}<br>
+             <button class="btn-ghost mt" onclick="retryRun()">↻ Son checkpoint'ten yeniden dene</button></div>`;
 
   if (d.circuit_breaker_tripped)
     html += `<div class="banner err">⛔ <b>Circuit breaker devrede:</b> ${esc(d.failure_reason)}<br>
              Sistem bu sorunu kendi başına çözemedi — aşağıdan yorumla reddedip yeni bir deneme başlatabilirsin.</div>`;
   if (d.phase === "done")
-    html += `<div class="banner ok">✅ ${esc(d.last_message)}</div>`;
+    html += `<div class="banner ok">✅ ${esc(d.deploy_message)}</div>`;
 
   if (c.one_liner) html += `<div class="card"><h2>Konsept</h2><div class="kv">
       <b>${esc(c.one_liner)}</b><br>Çekirdek özellik: ${esc(c.core_feature)}<br>
@@ -221,15 +233,25 @@ async function renderDetail(force){
       ${rc.qa_iterations_used} QA + ${rc.visual_iterations_used} görsel QA iterasyonuyla hazırlandı</div>
     <div class="changelog mt">${esc(rc.changelog)}</div></div>`;
 
+  const vissues = (d.visual_report && d.visual_report.issues) || [];
+  if (vissues.length) html += `<div class="card"><h2>Görsel QA Bulguları</h2><div class="kv">
+    ${vissues.map(i => `<span class="pill ${i.severity==="blocker"?"fail":i.severity==="major"?"wait":"run"}">${esc(i.severity)}</span>
+      <b>${esc(i.screen)}</b> · ${esc(i.type)} — ${esc(i.description)}`).join("<br>")}</div></div>`;
+
   if (d.awaiting_approval) html += `<div class="card"><h2>Karar</h2>
     <textarea id="feedback" placeholder="Reddedersen: ne düzeltilsin? (Coder'a aynen iletilir)"></textarea>
     <div class="row mt">
-      <button class="btn-primary" onclick="decide('approve')">✅ Onaylıyorum — dağıt</button>
+      ${rc ? `<button class="btn-primary" onclick="decide('approve')">✅ Onaylıyorum — dağıt</button>` : ""}
       <button class="btn-danger" onclick="decide('reject')">❌ Reddet ve düzelttir</button>
+      <button class="btn-ghost" onclick="decide('abort')">Run'ı sonlandır</button>
     </div></div>`;
 
-  if (d.last_error && d.phase !== "done" && !d.awaiting_approval)
-    html += `<div class="card"><h2>Son Hata Çıktısı</h2><pre>${esc(d.last_error)}</pre></div>`;
+  if (d.last_error && d.phase !== "done" && d.build_status === "failure") {
+    const a = d.last_error_analysis;
+    html += `<div class="card"><h2>Son Hata</h2>
+      ${a ? `<div class="kv"><b>Kök neden:</b> ${esc(a.root_cause)}<br><b>Strateji:</b> ${esc(a.fix_strategy)}</div>` : ""}
+      <pre class="${a ? "mt" : ""}">${esc(d.last_error)}</pre></div>`;
+  }
 
   html += `<div class="card"><h2>Üretilen Kod</h2><div class="filegrid">
     <div class="filelist" id="filelist"><div class="empty" style="padding:1rem">yükleniyor…</div></div>
@@ -266,16 +288,28 @@ async function startRun(){
   const r = await fetch("/runs", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({idea, platform: el("platform").value})});
   const j = await r.json();
+  if (!r.ok){ alert("Run başlatılamadı: " + JSON.stringify(j.detail)); return; }
   el("idea").value = "";
   select(j.run_id);
 }
 
 async function decide(action){
-  const feedback = el("feedback") ? el("feedback").value : "";
+  let feedback = el("feedback") ? el("feedback").value : "";
   if (action === "reject" && !feedback.trim()){ alert("Reddetmek için bir düzeltme talebi yaz — Coder'a iletilecek."); return; }
-  await fetch(`/runs/${selected}/${action}`, {method:"POST", headers:{"Content-Type":"application/json"},
+  if (action === "abort"){
+    if (!confirm("Run sonlandırılsın mı? Bu işlem geri alınamaz.")) return;
+    action = "reject"; feedback = "";
+  }
+  const r = await fetch(`/runs/${selected}/${action}`, {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({feedback})});
+  if (!r.ok){ alert((await r.json()).detail || "İşlem reddedildi"); }
   setTimeout(() => renderDetail(true), 900);
+}
+
+async function retryRun(){
+  const r = await fetch(`/runs/${selected}/retry`, {method:"POST"});
+  if (!r.ok){ alert((await r.json()).detail || "Yeniden deneme başlatılamadı"); }
+  setTimeout(() => renderDetail(true), 600);
 }
 
 loadRuns();
