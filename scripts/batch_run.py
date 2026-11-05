@@ -32,11 +32,14 @@ def main() -> int:
     ap.add_argument("--out", default="runs_report.json")
     ap.add_argument("--timeout", type=int, default=3600, help="run başına saniye")
     ap.add_argument("--retries", type=int, default=1, help="hata alan run için otomatik retry sayısı")
+    ap.add_argument("--platform", choices=["flutter", "react-native"],
+                    help="yalnızca bu platformdaki fikirleri çalıştır")
     args = ap.parse_args()
 
     http = httpx.Client(base_url=args.base, timeout=60)
     runs = []
-    for idea, platform in DEFAULT_IDEAS:
+    ideas = [(i, p) for i, p in DEFAULT_IDEAS if args.platform in (None, p)]
+    for idea, platform in ideas:
         r = http.post("/runs", json={"idea": idea, "platform": platform})
         r.raise_for_status()
         runs.append({"run_id": r.json()["run_id"], "idea": idea, "platform": platform, "retries": 0})

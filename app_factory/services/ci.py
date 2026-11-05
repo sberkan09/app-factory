@@ -102,6 +102,7 @@ class LocalCLIProvider:
                 steps.append(("test", ["flutter", "test"]))
             return steps
         return [
+            ("deps", ["npm", "install"]),
             ("analyze", ["npx", "tsc", "--noEmit"]),
             ("test", ["npx", "jest", "--passWithNoTests"]),
         ]
