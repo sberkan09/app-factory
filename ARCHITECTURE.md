@@ -37,16 +37,16 @@ Tüm graf **LangGraph** üzerinde `StateGraph` olarak modellenir; her düğüm s
 
 | Ajan | Model | Rol | Sınırlar (Kesinlikle Yapmaz) |
 |---|---|---|---|
-| **Idea Agent** | Claude Sonnet 5 | Kullanıcıdan gelen ham fikri (1 cümle bile olabilir) alır, pazar/rakip taraması yapar (WebSearch tool), "Single-Feature" ilkesine uyacak şekilde fikri daraltır. Çıktısı: `AppConcept` JSON. | Kod yazmaz, UI tasarlamaz, kapsamı genişletemez (max 1 core feature kuralı hard-coded). |
-| **Spec Agent** | Claude Sonnet 5 | `AppConcept`'i teknik gereksinime çevirir: ekran listesi, veri modeli, 3rd-party API ihtiyaçları, navigasyon akışı. Çıktısı: `AppSpec` JSON. | Görsel tasarım yapmaz, kod yazmaz. |
-| **UI/UX Agent** | Claude Sonnet 5 (+ vision) | `AppSpec`'ten wireframe/mockup üretir (aşağıda tool seçenekleri). Design token'ları (renk, tipografi, spacing) üretir. Çıktısı: `DesignSpec` JSON + mockup görselleri (S3/GCS URL). | Kod yazmaz, backend mantığı kurmaz. |
-| **Coder Agent** | **Claude Sonnet 5** (agentic coding) | `AppSpec` + `DesignSpec`'i alıp Flutter/RN proje iskeletini ve tüm kaynak kodunu yazar/düzenler. Self-healing döngüsünde hata raporlarını okuyup patch üretir. | Test/derleme yapmaz (bunu QA Agent yapar), kendi kendine "onaylandı" diyemez. |
-| **QA/Compiler Agent** | İlk 2 iterasyon: Claude Sonnet 5. 3. iterasyondan sonra eskalasyon: **Claude Opus 4.8 / Fable 5** | Cloud CI runner'ı tetikler, derleme/lint/unit test loglarını toplar, stack trace'i yapısal `ErrorReport` JSON'a çevirir. | Kod yazmaz/düzeltmez — sadece teşhis eder, Coder Agent'a devreder. |
-| **Visual Reviewer Agent** | Claude Sonnet 5 (vision) | Cloud device farm'dan gelen ekran görüntülerini `DesignSpec` mockup'larıyla karşılaştırır, UI bug'larını (taşma, kırpılma, kontrast, hizalama) tespit eder. Çıktısı: `VisualQAReport` JSON. | Kodu düzeltmez, sadece bulgu raporlar. |
+| **Idea Agent** | Claude Sonnet 5.5 | Kullanıcıdan gelen ham fikri (1 cümle bile olabilir) alır, pazar/rakip taraması yapar (WebSearch tool), "Single-Feature" ilkesine uyacak şekilde fikri daraltır. Çıktısı: `AppConcept` JSON. | Kod yazmaz, UI tasarlamaz, kapsamı genişletemez (max 1 core feature kuralı hard-coded). |
+| **Spec Agent** | Claude Sonnet 5.5 | `AppConcept`'i teknik gereksinime çevirir: ekran listesi, veri modeli, 3rd-party API ihtiyaçları, navigasyon akışı. Çıktısı: `AppSpec` JSON. | Görsel tasarım yapmaz, kod yazmaz. |
+| **UI/UX Agent** | Claude Sonnet 5.5 (+ vision) | `AppSpec`'ten wireframe/mockup üretir (aşağıda tool seçenekleri). Design token'ları (renk, tipografi, spacing) üretir. Çıktısı: `DesignSpec` JSON + mockup görselleri (S3/GCS URL). | Kod yazmaz, backend mantığı kurmaz. |
+| **Coder Agent** | **Claude Sonnet 5.5** (agentic coding) | `AppSpec` + `DesignSpec`'i alıp Flutter/RN proje iskeletini ve tüm kaynak kodunu yazar/düzenler. Self-healing döngüsünde hata raporlarını okuyup patch üretir. | Test/derleme yapmaz (bunu QA Agent yapar), kendi kendine "onaylandı" diyemez. |
+| **QA/Compiler Agent** | İlk 2 iterasyon: Claude Sonnet 5.5. 3. iterasyondan sonra eskalasyon: **Claude Opus 5.5 / Fable 5.1** | Cloud CI runner'ı tetikler, derleme/lint/unit test loglarını toplar, stack trace'i yapısal `ErrorReport` JSON'a çevirir. | Kod yazmaz/düzeltmez — sadece teşhis eder, Coder Agent'a devreder. |
+| **Visual Reviewer Agent** | Claude Sonnet 5.5 (vision) | Cloud device farm'dan gelen ekran görüntülerini `DesignSpec` mockup'larıyla karşılaştırır, UI bug'larını (taşma, kırpılma, kontrast, hizalama) tespit eder. Çıktısı: `VisualQAReport` JSON. | Kodu düzeltmez, sadece bulgu raporlar. |
 | **Release Candidate Builder** | Model yok (deterministik orkestrasyon kodu) | Tüm QA + Visual QA geçtiyse imzalı APK/AAB/IPA üretir, metadata + changelog hazırlar, Approval Panel'e gönderir. | Karar vermez, insan onayı bekler. |
 | **Deployment Agent** | Model yok (deterministik) | Onay sonrası Play Console / App Store Connect API'lerini çağırır. | Onay olmadan asla tetiklenmez (hard gate). |
 
-> **Not — model versiyonlama riski:** "Claude Fable 5" ve "Opus 4.8" adları senin promptunda geçiyor; kodda model ID'lerini config/env değişkeninden okuyacağız (`CODER_MODEL_ID`, `QA_ESCALATION_MODEL_ID` vb.) ki gerçek model kataloğu değiştiğinde tek satır değişikliği yeterli olsun. Kodlamaya başlarken kullanılabilir model ID'lerini API'den doğrulayacağız.
+> **Not — model versiyonlama riski:** Kodda model ID'lerini config/env değişkeninden okuyacağız (`CODER_MODEL_ID`, `QA_ESCALATION_MODEL_ID` vb.) ki gerçek model kataloğu değiştiğinde tek satır değişikliği yeterli olsun. Kodlamaya başlarken kullanılabilir model ID'lerini API'den doğrulayacağız.
 
 ### 1.2 Paylaşılan State Object (LangGraph State)
 
@@ -251,7 +251,7 @@ def route_after_build(state: PipelineState) -> str:
 [Screenshot (device farm)] + [Reference Mockup (UI/UX Agent çıktısı)]
                     |
                     v
-        Visual Reviewer Agent (Claude Sonnet 5, vision)
+        Visual Reviewer Agent (Claude Sonnet 5.5, vision)
         Prompt: "Bu ekran görüntüsünü referans mockup ile karşılaştır.
                  Taşma, hizalama bozukluğu, kontrast sorunu, kırpılmış
                  metin var mı? Her sorunu bounding-box ile raporla."
@@ -272,10 +272,10 @@ def route_after_build(state: PipelineState) -> str:
 
 | Görev | Model | Gerekçe |
 |---|---|---|
-| Idea/Spec/UI-UX/Coder (ana iş yükü) | **Claude Sonnet 5** | Agentic coding ve computer-use görevlerinde en yüksek hız/maliyet/kalite dengesi; büyük context window sayesinde tüm proje kod tabanını tek seferde görebilir. |
-| QA hata çözümleme — 1-2. deneme | **Claude Sonnet 5** | Çoğu compile/lint hatası basit kalıplardır, ucuz modelle hızlıca çözülür. |
-| QA hata çözümleme — 3+ deneme (eskalasyon) | **Claude Opus 4.8 / Fable 5** | Yüksek reasoning derinliği gerektiren inatçı/çok katmanlı hatalarda (örn. state management race condition, native modül çakışması) daha güçlü model devreye girer — maliyet sadece gerçekten gerektiğinde artar. |
-| Visual Reviewer | **Claude Sonnet 5 (vision)** | Ekran görüntüsü + mockup karşılaştırmasında güçlü vision yeteneği; GPT-4o vendor-çeşitliliği için opsiyonel ikinci-görüş (cross-check) olarak eklenebilir ama zorunlu değil. |
+| Idea/Spec/UI-UX/Coder (ana iş yükü) | **Claude Sonnet 5.5** | Agentic coding ve computer-use görevlerinde en yüksek hız/maliyet/kalite dengesi; büyük context window sayesinde tüm proje kod tabanını tek seferde görebilir. |
+| QA hata çözümleme — 1-2. deneme | **Claude Sonnet 5.5** | Çoğu compile/lint hatası basit kalıplardır, ucuz modelle hızlıca çözülür. |
+| QA hata çözümleme — 3+ deneme (eskalasyon) | **Claude Opus 5.5 / Fable 5.1** | Yüksek reasoning derinliği gerektiren inatçı/çok katmanlı hatalarda (örn. state management race condition, native modül çakışması) daha güçlü model devreye girer — maliyet sadece gerçekten gerektiğinde artar. |
+| Visual Reviewer | **Claude Sonnet 5.5 (vision)** | Ekran görüntüsü + mockup karşılaştırmasında güçlü vision yeteneği; GPT-4o vendor-çeşitliliği için opsiyonel ikinci-görüş (cross-check) olarak eklenebilir ama zorunlu değil. |
 
 Maliyet kontrolü: her ajan çağrısı `LangSmith` veya `Langfuse` ile trace'lenir, run başına token/maliyet dashboard'da izlenir; eskalasyon eşikleri (`MAX_ITERATIONS`, `escalation_level`) config'den ayarlanabilir olmalı ki maliyet/kalite dengesi sonradan tune edilebilsin.
 

@@ -12,6 +12,7 @@ Akış:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 
 from langgraph.graph import END, StateGraph
@@ -32,7 +33,9 @@ from app_factory.graph.routing import (
     route_after_human,
     route_after_visual,
 )
+from app_factory.llm.usage import collect_usage
 from app_factory.schemas.contracts import (
+    AppConcept,
     AppSpec,
     CodeBundle,
     DesignSpec,
@@ -43,7 +46,7 @@ from app_factory.schemas.contracts import (
 from app_factory.schemas.state import PipelineState
 from app_factory.services.deployment import DeploymentProvider
 from app_factory.services.device_farm import DeviceFarmProvider
-from app_factory.services.workspace import WorkspaceService
+from app_factory.services.workspace import WorkspaceService, make_app_id
 
 
 @dataclass
@@ -60,6 +63,22 @@ class PipelineDeps:
     deployment: DeploymentProvider
 
 
+def _tracked(name: str, fn):
+    """Node'u LLM kullanım takibiyle sarar: çağrı kayıtları `llm_calls`'a eklenir."""
+
+    @wraps(fn)
+    def wrapper(state: PipelineState) -> dict:
+        with collect_usage() as calls:
+            update = fn(state)
+        if calls:
+            for c in calls:
+                c["agent"] = c.get("agent") or name
+            update = {**update, "llm_calls": calls}
+        return update
+
+    return wrapper
+
+
 def build_graph(deps: PipelineDeps, checkpointer=None):
     s = deps.settings
 
@@ -68,11 +87,16 @@ def build_graph(deps: PipelineDeps, checkpointer=None):
         return {"phase": "spec", "app_concept": concept.model_dump()}
 
     def spec_node(state: PipelineState) -> dict:
-        from app_factory.schemas.contracts import AppConcept
-
         concept = AppConcept.model_validate(state["app_concept"])
-        spec = deps.spec_agent.run(concept, state.get("platform", "flutter"))
-        return {"phase": "design", "app_spec": spec.model_dump()}
+        platform = state.get("platform", "flutter")
+        spec = deps.spec_agent.run(concept, platform)
+        # Platform kullanıcının seçimidir; model farklı bir değer dönse bile ez.
+        spec.platform = platform
+        return {
+            "phase": "design",
+            "app_spec": spec.model_dump(),
+            "app_id": make_app_id(s.app_id_prefix, spec.app_name),
+        }
 
     def design_node(state: PipelineState) -> dict:
         spec = AppSpec.model_validate(state["app_spec"])
@@ -83,41 +107,73 @@ def build_graph(deps: PipelineDeps, checkpointer=None):
         spec = AppSpec.model_validate(state["app_spec"])
         design = DesignSpec.model_validate(state["design_spec"])
 
+        run_id = state["run_id"]
+        app_id = state.get("app_id") or make_app_id(s.app_id_prefix, spec.app_name)
+
         error_report = None
         build_result = state.get("build_result")
         if build_result and build_result.get("error_report"):
             error_report = ErrorReport.model_validate(build_result["error_report"])
 
-        # Görsel QA'dan dönüşte bulgular coder'a UI-fix görevi olarak gider
-        human_feedback = state.get("human_feedback") or None
+        # İnsan geri bildirimi + (derleme hatası yoksa) görsel QA bulguları
+        feedback_parts: list[str] = []
+        if state.get("human_feedback"):
+            feedback_parts.append(state["human_feedback"])
         visual_report = state.get("visual_report")
         if not state.get("visual_ok", True) and visual_report and error_report is None:
             report = VisualQAReport.model_validate(visual_report)
-            human_feedback = (
-                "Görsel QA bulguları (blocker'ları düzelt):\n" + report.model_dump_json(indent=2)
+            blockers = [i for i in report.issues if i.severity == "blocker"]
+            feedback_parts.append(
+                "Görsel QA blocker bulguları (düzelt):\n"
+                + "\n".join(f"- [{i.screen}] {i.type}: {i.description}" for i in blockers)
             )
+        human_feedback = "\n\n".join(feedback_parts) or None
 
+        update: dict = {}
         is_first_pass = not state.get("code_diff_history")
-        existing = None if is_first_pass else deps.workspace.read_all(state["run_id"])
+        if is_first_pass:
+            update["scaffolded"] = deps.workspace.scaffold(run_id, spec.platform, app_id)
+        existing = None if is_first_pass else deps.workspace.read_all(run_id)
 
+        fix_attempts = list(state.get("fix_attempts", []))
         bundle: CodeBundle = deps.coder_agent.run(
             spec,
             design,
+            app_id=app_id,
             error_report=error_report,
             human_feedback=human_feedback,
             existing_files=existing,
-            diff_history=state.get("code_diff_history"),
+            fix_attempts=fix_attempts if error_report is not None else None,
             escalated=state.get("escalation_level") == "escalated",
         )
-        diff = deps.workspace.apply_bundle(state["run_id"], bundle)
+        diff = deps.workspace.apply_bundle(run_id, bundle)
         history = list(state.get("code_diff_history", []))
         history.append(diff or "(no changes)")
-        return {
-            "phase": "qa",
-            "workspace_path": str(deps.workspace.path_for(state["run_id"])),
-            "code_diff_history": history,
-            "human_feedback": "",  # işlendi; tekrar tetiklenmesin
-        }
+
+        if error_report is not None:
+            # Bu diff bir düzeltme denemesi; build tekrar kırılırsa "başarısız
+            # deneme" olarak bir sonraki coder çağrısına bağlam olur.
+            summary = (
+                error_report.analysis.root_cause if error_report.analysis
+                else error_report.raw_output.strip().splitlines()[0][:300]
+                if error_report.raw_output.strip() else error_report.error_type
+            )
+            fix_attempts.append({
+                "iteration": error_report.iteration,
+                "fingerprint": error_report.fingerprint,
+                "error_summary": summary,
+                "diff": (diff or "(no changes)")[-6000:],
+            })
+
+        update.update(
+            phase="qa",
+            app_id=app_id,
+            workspace_path=str(deps.workspace.path_for(run_id)),
+            code_diff_history=history,
+            fix_attempts=fix_attempts,
+            human_feedback="",  # işlendi; tekrar tetiklenmesin
+        )
+        return update
 
     def build_and_test_node(state: PipelineState) -> dict:
         iteration = state.get("qa_iteration", 0) + 1
@@ -126,14 +182,15 @@ def build_graph(deps: PipelineDeps, checkpointer=None):
             Path(state["workspace_path"]),
             state.get("platform", "flutter"),
             iteration,
-            analyze_with_llm=escalated,
+            escalated=escalated,
         )
         update: dict = {
             "build_result": result.model_dump(),
             "qa_iteration": iteration,
         }
         if result.status in ("success", "skipped"):
-            update.update(build_ok=True, phase="visual_qa")
+            # Hata turu kapandı: başarısız deneme bağlamı sıfırlanır
+            update.update(build_ok=True, phase="visual_qa", fix_attempts=[])
             return update
 
         fp = result.error_report.fingerprint
@@ -166,7 +223,9 @@ def build_graph(deps: PipelineDeps, checkpointer=None):
         iteration = state.get("visual_iteration", 0) + 1
 
         artifact = (state.get("build_result") or {}).get("artifact_path")
-        screenshots = deps.device_farm.capture(Path(state["workspace_path"]), spec, artifact)
+        screenshots = deps.device_farm.capture(
+            Path(state["workspace_path"]), spec, artifact, app_id=state.get("app_id", "")
+        )
         report = deps.visual_agent.run(design, screenshots)
 
         update: dict = {"visual_report": report.model_dump(), "visual_iteration": iteration}
@@ -191,12 +250,16 @@ def build_graph(deps: PipelineDeps, checkpointer=None):
             Path(state["workspace_path"]), state.get("platform", "flutter")
         )
         concept = state.get("app_concept", {})
+        minor = [i for i in (state.get("visual_report") or {}).get("issues", [])
+                 if i.get("severity") != "blocker"]
         rc = ReleaseCandidate(
             app_name=spec.app_name,
+            app_id=state.get("app_id", ""),
             artifact_path=artifact,
             changelog=(
                 f"{concept.get('one_liner', spec.app_name)}\n"
                 f"Çekirdek özellik: {spec.core_feature}"
+                + (f"\nBilinen küçük görsel bulgular: {len(minor)}" if minor else "")
             ),
             qa_iterations_used=state.get("qa_iteration", 0),
             visual_iterations_used=state.get("visual_iteration", 0),
@@ -220,6 +283,15 @@ def build_graph(deps: PipelineDeps, checkpointer=None):
             "human_decision": decision.get("decision", "rejected"),
             "human_feedback": decision.get("feedback", ""),
         }
+        if update["human_decision"] == "approved" and not state.get("release_candidate"):
+            # Breaker sonrası onaylanacak bir sürüm yok: dağıtım güvenli değil.
+            update.update(
+                human_decision="rejected",
+                human_feedback="",
+                phase="failed",
+                failure_reason="Onaylanacak sürüm adayı yok (circuit breaker sonrası onay reddedildi)",
+            )
+            return update
         if update["human_decision"] == "rejected" and update["human_feedback"]:
             # insan geri bildirimiyle yeni coding turu: sayaç ve breaker sıfırlanır
             update.update(
@@ -231,6 +303,10 @@ def build_graph(deps: PipelineDeps, checkpointer=None):
                 build_result={},
                 build_ok=False,
                 visual_ok=True,
+                visual_report={},
+                release_candidate={},
+                fix_attempts=[],
+                failure_reason="",
                 escalation_level="standard",
             )
         elif update["human_decision"] == "approved":
@@ -242,15 +318,15 @@ def build_graph(deps: PipelineDeps, checkpointer=None):
     def deploy_node(state: PipelineState) -> dict:
         rc = ReleaseCandidate.model_validate(state["release_candidate"])
         message = deps.deployment.deploy(rc)
-        return {"phase": "done", "failure_reason": "", "human_feedback": message}
+        return {"phase": "done", "failure_reason": "", "deploy_message": message}
 
     graph = StateGraph(PipelineState)
-    graph.add_node("idea", idea_node)
-    graph.add_node("spec", spec_node)
-    graph.add_node("design", design_node)
-    graph.add_node("code", code_node)
-    graph.add_node("build_and_test", build_and_test_node)
-    graph.add_node("visual_review", visual_review_node)
+    graph.add_node("idea", _tracked("idea", idea_node))
+    graph.add_node("spec", _tracked("spec", spec_node))
+    graph.add_node("design", _tracked("design", design_node))
+    graph.add_node("code", _tracked("code", code_node))
+    graph.add_node("build_and_test", _tracked("build_and_test", build_and_test_node))
+    graph.add_node("visual_review", _tracked("visual_review", visual_review_node))
     graph.add_node("build_release", build_release_node)
     graph.add_node("await_human", await_human_node)
     graph.add_node("deploy", deploy_node)

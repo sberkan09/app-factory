@@ -5,3 +5,6 @@ workspaces/
 .venv/
 *.log
 app_factory.sqlite*
+__pycache__/
+*.pyc
+*.egg-info/

@@ -14,6 +14,7 @@ from app_factory.agents import (
     VisualReviewerAgent,
 )
 from app_factory.config import Settings
+from app_factory.llm.usage import record_usage
 from app_factory.graph import PipelineDeps, build_graph
 from app_factory.schemas.contracts import (
     AppConcept,
@@ -60,13 +61,18 @@ class FakeLLM:
         self.calls: list[dict] = []
         self.code_version = 0
         self.visual_reports: list[VisualQAReport] = []
+        self.fail_next: dict[type, Exception] = {}  # output_model -> bir kez fırlatılacak hata
+        self.spec_platform = "flutter"
 
     def structured(self, *, model, output_model, system, prompt, images=None, max_tokens=16000):
-        self.calls.append({"model": model, "output": output_model.__name__})
+        self.calls.append({"model": model, "output": output_model.__name__, "prompt": prompt})
+        record_usage(model=model, input_tokens=1000, output_tokens=100)
+        if output_model in self.fail_next:
+            raise self.fail_next.pop(output_model)
         if output_model is AppConcept:
             return CONCEPT
         if output_model is AppSpec:
-            return SPEC
+            return SPEC.model_copy(update={"platform": self.spec_platform})
         if output_model is DesignSpec:
             return DESIGN
         if output_model is CodeBundle:
@@ -94,7 +100,7 @@ def test_settings(tmp_path):
     )
 
 
-def make_pipeline(settings: Settings, ci: StubCI, llm: FakeLLM | None = None):
+def make_deps(settings: Settings, ci: StubCI, llm: FakeLLM | None = None, device_farm=None):
     llm = llm or FakeLLM()
     deps = PipelineDeps(
         settings=settings,
@@ -103,11 +109,16 @@ def make_pipeline(settings: Settings, ci: StubCI, llm: FakeLLM | None = None):
         spec_agent=SpecAgent(llm, "test-model"),
         design_agent=DesignAgent(llm, "test-model"),
         coder_agent=CoderAgent(llm, "test-coder", "test-escalation"),
-        qa_agent=QACompilerAgent(ci, llm, "test-escalation"),
+        qa_agent=QACompilerAgent(ci, llm, "test-model", "test-escalation"),
         visual_agent=VisualReviewerAgent(llm, "test-vision"),
-        device_farm=StubDeviceFarm(),
+        device_farm=device_farm or StubDeviceFarm(),
         deployment=StubDeployment(),
     )
+    return deps, llm
+
+
+def make_pipeline(settings: Settings, ci: StubCI, llm: FakeLLM | None = None, device_farm=None):
+    deps, llm = make_deps(settings, ci, llm, device_farm)
     graph = build_graph(deps, checkpointer=MemorySaver())
     return graph, llm
 
@@ -121,6 +132,7 @@ def initial_state(run_id: str = "test-run") -> dict:
         "qa_iteration": 0,
         "visual_iteration": 0,
         "code_diff_history": [],
+        "fix_attempts": [],
         "qa_error_fingerprints": [],
         "escalation_level": "standard",
     }

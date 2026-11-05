@@ -27,11 +27,18 @@ def error_fingerprint(step: str, raw_output: str) -> str:
     Satır numaraları/geçici yollar değişse de aynı hatanın aynı hash'i
     üretmesi için çıktı normalize edilir.
     """
-    lines = [l for l in raw_output.splitlines() if l.strip()]
-    significant = " ".join(lines[:5])
-    normalized = re.sub(r"\d+", "N", significant)
-    normalized = re.sub(r"/[^\s:]+/", "/PATH/", normalized)
+    lines = [l.strip() for l in raw_output.splitlines() if l.strip()]
+    # Araç gürültüsünü ("Analyzing...", "Resolving dependencies...") atlamak için
+    # önce hata satırlarına odaklan; yoksa ilk satırlara düş.
+    error_lines = [l for l in lines if _ERROR_LINE.search(l)]
+    significant = " ".join((error_lines or lines)[:5])
+    normalized = re.sub(r"(?:[A-Za-z]:)?[/\\][^\s:]+[/\\]", "/PATH/", significant)
+    normalized = re.sub(r"\d+", "N", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
     return hashlib.sha256(f"{step}:{normalized}".encode()).hexdigest()[:16]
+
+
+_ERROR_LINE = re.compile(r"\berror\b|\bexception\b|\bfailed\b|^E\s", re.IGNORECASE)
 
 
 def _classify(step: str) -> str:
@@ -115,7 +122,8 @@ class GitHubActionsCI:
     """GitHub Actions'ı workflow_dispatch ile tetikleyip sonucu poll eder."""
 
     def __init__(self, token: str, repo: str, workflow: str, poll_interval: int = 20,
-                 timeout_s: int = 1800):
+                 timeout_s: int = 1800, ref: str = "main"):
+        self.ref = ref
         self.token = token
         self.repo = repo
         self.workflow = workflow
@@ -138,20 +146,23 @@ class GitHubActionsCI:
         # Not: workspace'in bir branch'e push edilmiş olması beklenir; orkestratör
         # commit/push'u yapar. Burada workflow tetiklenir ve sonuç beklenir.
         with self._client() as http:
+            # Dispatch'ten hemen önceki an: yalnızca bundan sonra oluşturulan
+            # run'ları kabul et (önceki/başka run'ı yanlışlıkla okumamak için).
+            dispatched_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 5))
             resp = http.post(
                 f"/repos/{self.repo}/actions/workflows/{self.workflow}/dispatches",
-                json={"ref": "main", "inputs": {"platform": platform}},
+                json={"ref": self.ref, "inputs": {"platform": platform}},
             )
             if resp.status_code >= 300:
-                return make_failure("build", "", f"workflow_dispatch failed: {resp.text}", iteration)
+                return make_failure("tooling", "", f"workflow_dispatch failed: {resp.text}", iteration)
 
             deadline = time.time() + self.timeout_s
-            run_id = None
             while time.time() < deadline:
                 time.sleep(self.poll_interval)
                 runs = http.get(
                     f"/repos/{self.repo}/actions/workflows/{self.workflow}/runs",
-                    params={"per_page": 1},
+                    params={"per_page": 1, "event": "workflow_dispatch",
+                            "branch": self.ref, "created": f">={dispatched_at}"},
                 ).json()
                 if not runs.get("workflow_runs"):
                     continue
@@ -196,7 +207,8 @@ class StubCI:
 
 def make_ci_provider(settings) -> CIProvider:
     if settings.ci_provider == "github":
-        return GitHubActionsCI(settings.github_token, settings.github_repo, settings.github_workflow)
+        return GitHubActionsCI(settings.github_token, settings.github_repo, settings.github_workflow,
+                               ref=settings.github_ref)
     if settings.ci_provider == "stub":
         return StubCI()
     return LocalCLIProvider()

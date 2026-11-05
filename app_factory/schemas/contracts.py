@@ -91,6 +91,10 @@ class GeneratedFile(BaseModel):
 class CodeBundle(BaseModel):
     files: list[GeneratedFile]
     entry_point: str = Field(description="Ana dosya yolu, örn. lib/main.dart")
+    deleted_files: list[str] = Field(
+        default_factory=list,
+        description="Silinmesi gereken mevcut dosyaların yolları (yoksa boş)",
+    )
     notes: str = ""
 
 
@@ -142,6 +146,7 @@ class VisualQAReport(BaseModel):
 
 class ReleaseCandidate(BaseModel):
     app_name: str
+    app_id: str = Field(default="", description="applicationId / bundle id, örn. com.appfactory.sutakip")
     version: str = "0.1.0"
     artifact_path: str | None = None
     changelog: str

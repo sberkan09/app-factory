@@ -10,10 +10,10 @@ class Settings(BaseSettings):
 
     # Model seçim matrisi (ARCHITECTURE.md §4.1). Model ID'leri env'den
     # değiştirilebilir ki model kataloğu değişince kod dokunmadan güncellensin.
-    planner_model_id: str = "claude-sonnet-5"
-    coder_model_id: str = "claude-sonnet-5"
-    vision_model_id: str = "claude-sonnet-5"
-    qa_escalation_model_id: str = "claude-opus-4-8"
+    planner_model_id: str = "claude-sonnet-5-5"
+    coder_model_id: str = "claude-sonnet-5-5"
+    vision_model_id: str = "claude-sonnet-5-5"
+    qa_escalation_model_id: str = "claude-opus-5-5"  # veya claude-fable-5-1
 
     # Self-healing circuit breaker (ARCHITECTURE.md §2.2)
     max_qa_iterations: int = 5
@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     github_token: str = ""
     github_repo: str = ""  # "owner/repo"
     github_workflow: str = "build.yml"
+    github_ref: str = "main"  # workflow'un derleyeceği branch
+
+    # Uygulama kimliği: her run için applicationId/bundle id = prefix + slug(app_name)
+    app_id_prefix: str = "com.appfactory"
 
     # Depolama
     workspace_root: Path = Path("./workspaces")

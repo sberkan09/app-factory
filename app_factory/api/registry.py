@@ -39,6 +39,21 @@ class RunRegistry:
             })
             self.path.write_text(json.dumps(runs, ensure_ascii=False, indent=2))
 
+    def update(self, run_id: str, **fields) -> None:
+        with self._lock:
+            runs = self._read()
+            for r in runs:
+                if r["run_id"] == run_id:
+                    r.update(fields)
+                    break
+            else:
+                return
+            self.path.write_text(json.dumps(runs, ensure_ascii=False, indent=2))
+
+    def get(self, run_id: str) -> dict | None:
+        with self._lock:
+            return next((r for r in self._read() if r["run_id"] == run_id), None)
+
     def list(self) -> list[dict]:
         with self._lock:
             return self._read()

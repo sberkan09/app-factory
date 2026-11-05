@@ -44,7 +44,7 @@ def build_deps(cfg: Settings) -> PipelineDeps:
         spec_agent=SpecAgent(llm, cfg.planner_model_id),
         design_agent=DesignAgent(llm, cfg.planner_model_id),
         coder_agent=CoderAgent(llm, cfg.coder_model_id, cfg.qa_escalation_model_id),
-        qa_agent=QACompilerAgent(ci, llm, cfg.qa_escalation_model_id),
+        qa_agent=QACompilerAgent(ci, llm, cfg.planner_model_id, cfg.qa_escalation_model_id),
         visual_agent=VisualReviewerAgent(llm, cfg.vision_model_id),
         device_farm=make_device_farm(cfg),
         deployment=make_deployment_provider(cfg),
@@ -70,5 +70,5 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="App Factory", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="App Factory", version="0.2.0", lifespan=lifespan)
 app.include_router(router)

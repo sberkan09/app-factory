@@ -22,11 +22,13 @@ class Screenshot:
 
 
 class DeviceFarmProvider(Protocol):
-    def capture(self, workspace: Path, spec: AppSpec, artifact_path: str | None) -> list[Screenshot]: ...
+    def capture(self, workspace: Path, spec: AppSpec, artifact_path: str | None,
+                app_id: str = "") -> list[Screenshot]: ...
 
 
 class StubDeviceFarm:
-    def capture(self, workspace: Path, spec: AppSpec, artifact_path: str | None) -> list[Screenshot]:
+    def capture(self, workspace: Path, spec: AppSpec, artifact_path: str | None,
+                app_id: str = "") -> list[Screenshot]:
         return []
 
 
@@ -36,18 +38,19 @@ class MaestroCloudFarm:
     def __init__(self, api_key: str):
         self.api_key = api_key
 
-    def generate_flow_yaml(self, spec: AppSpec) -> str:
-        lines = ["appId: com.example.app", "---", "- launchApp"]
+    def generate_flow_yaml(self, spec: AppSpec, app_id: str) -> str:
+        lines = [f"appId: {app_id or 'com.example.app'}", "---", "- launchApp"]
         for screen in spec.screens:
             lines.append(f"- takeScreenshot: {screen.name}")
             for target in screen.navigation_targets[:1]:
                 lines.append(f"- tapOn: '{target}'")
         return "\n".join(lines)
 
-    def capture(self, workspace: Path, spec: AppSpec, artifact_path: str | None) -> list[Screenshot]:
+    def capture(self, workspace: Path, spec: AppSpec, artifact_path: str | None,
+                app_id: str = "") -> list[Screenshot]:
         if artifact_path is None:
             return []
-        flow = self.generate_flow_yaml(spec)
+        flow = self.generate_flow_yaml(spec, app_id)
         (workspace / "maestro_flow.yaml").write_text(flow)
         # Gerçek entegrasyon: `maestro cloud --apiKey ... <apk> maestro_flow.yaml`
         # çağrısı + sonuç API'sinden screenshot indirme. MVP'de flow dosyası

@@ -4,6 +4,7 @@ from langgraph.types import Command
 
 from app_factory.schemas.contracts import VisualIssue, VisualQAReport
 from app_factory.services.ci import StubCI
+from app_factory.services.device_farm import Screenshot
 from tests.conftest import FakeLLM, initial_state, make_pipeline, run_config
 
 
@@ -20,7 +21,8 @@ def test_happy_path_reaches_approval_then_deploys(test_settings):
     # Onayla -> deploy -> done
     final = graph.invoke(Command(resume={"decision": "approved"}), run_config())
     assert final["phase"] == "done"
-    assert "internal track" in final["human_feedback"]
+    assert "internal track" in final["deploy_message"]
+    assert "com.appfactory.sutakip" in final["deploy_message"]
 
 
 def test_self_healing_retries_until_build_passes(test_settings):
@@ -85,35 +87,17 @@ def test_visual_blocker_sends_back_to_coder(test_settings):
     ]
 
     # StubDeviceFarm screenshot döndürmez (visual QA skipped olurdu); blocker
-    # akışını test etmek için screenshot döndüren bir farm ile pipeline kur.
-    from langgraph.checkpoint.memory import MemorySaver
-
-    from app_factory.agents import (
-        CoderAgent, DesignAgent, IdeaAgent, QACompilerAgent, SpecAgent, VisualReviewerAgent,
-    )
-    from app_factory.graph import PipelineDeps, build_graph
-    from app_factory.services import StubDeployment, WorkspaceService
-    from app_factory.services.device_farm import Screenshot
-
-    class OneShotFarm:
-        def capture(self, workspace, spec, artifact_path):
-            return [Screenshot(screen_name="HomeScreen", png_bytes=b"fakepng")]
-
-    deps = PipelineDeps(
-        settings=test_settings,
-        workspace=WorkspaceService(test_settings.workspace_root),
-        idea_agent=IdeaAgent(llm, "m"),
-        spec_agent=SpecAgent(llm, "m"),
-        design_agent=DesignAgent(llm, "m"),
-        coder_agent=CoderAgent(llm, "m", "m2"),
-        qa_agent=QACompilerAgent(StubCI(fail_times=0), llm, "m2"),
-        visual_agent=VisualReviewerAgent(llm, "mv"),
-        device_farm=OneShotFarm(),
-        deployment=StubDeployment(),
-    )
-    graph = build_graph(deps, checkpointer=MemorySaver())
+    # akışını test etmek için screenshot döndüren bir farm kullan.
+    graph, _ = make_pipeline(test_settings, StubCI(fail_times=0), llm, device_farm=OneShotFarm())
     result = graph.invoke(initial_state("vqa-run"), run_config("vqa-run"))
 
     assert result["phase"] == "awaiting_approval"
     assert result["visual_iteration"] == 2  # 1. tur blocker -> coder -> 2. tur pass
     assert llm.code_version == 2
+    fix_prompt = [c for c in llm.calls if c["output"] == "CodeBundle"][1]["prompt"]
+    assert "Buton taşıyor" in fix_prompt
+
+
+class OneShotFarm:
+    def capture(self, workspace, spec, artifact_path, app_id=""):
+        return [Screenshot(screen_name="HomeScreen", png_bytes=b"fakepng")]
